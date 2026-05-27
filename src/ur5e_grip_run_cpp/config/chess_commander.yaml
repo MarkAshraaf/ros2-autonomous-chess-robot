@@ -1,0 +1,77 @@
+ee_pose_commander:
+  ros__parameters:
+
+    # Board anchor
+    h8_x: -0.213
+    h8_y: 0.424
+    pick_z: 1.114
+
+    # Board calibration
+    file_step_x: -0.0666
+    file_step_y: 0.0006
+
+    rank_step_x: 0.0037
+    rank_step_y: -0.0624
+
+    # End-effector orientation
+    qx: -0.010
+    qy: 1.000
+    qz: 0.002
+    qw: -0.015
+
+    # Capture/removal area
+    capture_x: 0.442
+    capture_y: 0.504
+    capture_z: 1.149
+
+    capture_qx: 0.999
+    capture_qy: 0.009
+    capture_qz: -0.009
+    capture_qw: -0.052
+
+    # Motion settings
+    lift_z: 0.035
+
+    planning_group: "ur5e_workcell_manipulator"
+    pose_reference_frame: "world"
+    end_effector_link: "tool0"
+    home_named_target: "up"
+
+    position_tolerance: 0.01
+    orientation_tolerance: 0.03
+    planning_time: 10.0
+    num_planning_attempts: 10
+
+    velocity_scale: 0.40
+    acceleration_scale: 0.40
+    allow_replanning: true
+
+    startup_delay_sec: 2.0
+    state_wait_sec: 10.0
+
+    # Bezier / Cartesian path settings
+    bezier_points: 18
+    eef_step: 0.008
+    cartesian_fraction_min: 0.90
+    vertical_handle_ratio: 0.30
+    peak_extra_z: 0.010
+
+    return_home_after_move: true
+
+    # Topic input
+    chess_move_topic: "/chess_move"
+    wait_for_move_sec: 60.0
+
+    # Gripper
+    use_gripper: true
+    gripper_action_name: "/robotiq_2f_urcap_adapter/gripper_command"
+
+    gripper_open_position: 0.085
+    gripper_close_position: 0.031
+    gripper_start_open_position: 0.085
+
+    gripper_max_speed: 0.10
+    gripper_max_effort: 50.0
+
+    gripper_wait_sec: 1.0
+    gripper_server_wait_sec: 5.0

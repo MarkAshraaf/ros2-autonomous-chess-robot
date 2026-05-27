@@ -1,0 +1,267 @@
+#old working mapper state
+
+#!/usr/bin/env python3
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+import json
+import math
+import time
+
+
+# =========================================================
+# Configuration
+# =========================================================
+
+SQUARE_SIZE = 0.063      # 6.25 cm in meters
+MARGIN = 0.003            # 6 mm margin near square borders
+
+MIN_MOVE_DISTANCE = 0.025  # 4 cm minimum real movement
+PROCESS_INTERVAL = 2.0    # process one frame every 1 second
+
+FILES = "abcdefgh"
+
+ALL_SQUARES = [
+    f"{file}{rank}"
+    for rank in range(1, 9)
+    for file in FILES
+]
+
+
+class MapperStateNode(Node):
+    def __init__(self):
+        super().__init__("mapper_state_node")
+
+        self.previous_board = None
+
+        # Store previous real positions for noise filtering
+        self.previous_positions = {}
+
+        # Time filter
+        self.last_process_time = 0.0
+
+        # Robot status flags
+        self.robot_is_moving = False
+        self.need_sync = False
+
+        self.sub = self.create_subscription(
+            String,
+            "/detected_pieces",
+            self.callback,
+            10
+        )
+
+        self.robot_sub = self.create_subscription(
+            String,
+            "/robot_status",
+            self.robot_callback,
+            10
+        )
+
+        self.board_pub = self.create_publisher(
+            String,
+            "/board_state_raw",
+            10
+        )
+
+        self.move_pub = self.create_publisher(
+            String,
+            "/detected_move",
+            10
+        )
+
+        self.get_logger().info("Mapper + State Node Started")
+
+    def robot_callback(self, msg):
+        status = msg.data.strip().lower()
+
+        if status == "moving":
+            self.robot_is_moving = True
+            self.need_sync = True
+            self.get_logger().info("Robot moving → ignoring detections")
+
+        elif status == "idle":
+            self.robot_is_moving = False
+            self.get_logger().info("Robot idle → next frame will sync board")
+
+    def xy_to_square(self, x, y):
+        col = int(math.floor(x / SQUARE_SIZE))
+        row = int(math.floor(y / SQUARE_SIZE))
+
+        if col < 0 or col > 7 or row < 0 or row > 7:
+            return None
+
+        local_x = x - col * SQUARE_SIZE
+        local_y = y - row * SQUARE_SIZE
+
+        if (
+            local_x < MARGIN or local_x > SQUARE_SIZE - MARGIN or
+            local_y < MARGIN or local_y > SQUARE_SIZE - MARGIN
+        ):
+            return None
+
+        return FILES[col] + str(row + 1)
+
+    def distance(self, x1, y1, x2, y2):
+        return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+
+    def filter_small_jitter(self, detections):
+        filtered = []
+
+        for det in detections:
+            piece = det["piece"]
+            x = float(det["x"])
+            y = float(det["y"])
+
+            if piece in self.previous_positions:
+                old_x, old_y = self.previous_positions[piece]
+
+                dist = self.distance(x, y, old_x, old_y)
+
+                if dist < MIN_MOVE_DISTANCE:
+                    x = old_x
+                    y = old_y
+
+            filtered.append({
+                "piece": piece,
+                "x": x,
+                "y": y
+            })
+
+        return filtered
+
+    def build_board_from_detections(self, detections):
+        board = {}
+
+        for det in detections:
+            try:
+                piece = det["piece"]
+                x = float(det["x"])
+                y = float(det["y"])
+            except KeyError:
+                self.get_logger().warning(f"Invalid detection format: {det}")
+                continue
+
+            square = self.xy_to_square(x, y)
+
+            if square is None:
+                self.get_logger().warning(
+                    f"Ignored {piece}: x={x:.3f}, y={y:.3f}"
+                )
+                continue
+
+            board[square] = piece
+
+        return board
+
+    def detect_state_change(self, current_board):
+        if self.previous_board is None:
+            self.previous_board = current_board.copy()
+            return None, "initialized"
+
+        changed_squares = []
+
+        for square in ALL_SQUARES:
+            old_piece = self.previous_board.get(square)
+            new_piece = current_board.get(square)
+
+            if old_piece != new_piece:
+                changed_squares.append({
+                    "square": square,
+                    "old": old_piece,
+                    "new": new_piece
+                })
+
+        if len(changed_squares) == 0:
+            return None, "no_change"
+
+        source = None
+        destination = None
+        moving_piece = None
+
+        for change in changed_squares:
+            if change["old"] is not None and change["new"] is None:
+                source = change["square"]
+                moving_piece = change["old"]
+                break
+
+        for change in changed_squares:
+            if change["new"] == moving_piece:
+                destination = change["square"]
+                break
+
+        if source is not None and destination is not None:
+            move = source + destination
+            self.previous_board = current_board.copy()
+            return move, "valid_move"
+
+        return None, "uncertain"
+
+    def update_previous_positions(self, detections):
+        self.previous_positions = {
+            det["piece"]: (float(det["x"]), float(det["y"]))
+            for det in detections
+        }
+
+    def callback(self, msg):
+        now = time.time()
+
+        if now - self.last_process_time < PROCESS_INTERVAL:
+            return
+
+        self.last_process_time = now
+
+        try:
+            detections = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().error("Invalid JSON received")
+            return
+
+        filtered_detections = self.filter_small_jitter(detections)
+
+        current_board = self.build_board_from_detections(filtered_detections)
+
+        board_msg = String()
+        board_msg.data = json.dumps(current_board)
+        self.board_pub.publish(board_msg)
+
+        if self.robot_is_moving:
+            self.get_logger().info("Robot moving → frame ignored")
+            return
+
+        if self.need_sync:
+            self.previous_board = current_board.copy()
+            self.need_sync = False
+            self.update_previous_positions(filtered_detections)
+            self.get_logger().info("Board synced after robot move")
+            return
+
+        move, status = self.detect_state_change(current_board)
+
+        self.update_previous_positions(filtered_detections)
+
+        self.get_logger().info(f"Board: {current_board}")
+        self.get_logger().info(f"Status: {status}")
+
+        if status == "valid_move":
+            move_msg = String()
+            move_msg.data = move
+            self.move_pub.publish(move_msg)
+
+            self.get_logger().info(f"Detected human move: {move}")
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = MapperStateNode()
+
+    rclpy.spin(node)
+
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
